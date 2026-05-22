@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2014-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -49,10 +49,6 @@
 
 #include <soc/qcom/minidump.h>
 #endif
-
-//#ifndef OPLUS_BUG_STABILITY
-#include <soc/oplus/system/oplus_project.h>
-//#endif /* OPLUS_BUG_STABILITY */
 
 #if !defined(__printf)
 #define __printf(a, b)
@@ -406,16 +402,7 @@ void __qdf_bug(void);
 #else /* CONFIG_SLUB_DEBUG */
 static inline void __qdf_bug(void)
 {
-//#ifndef OPLUS_BUG_STABILITY
-//modify for: close bug in user build
-//	BUG();
-//#else /* OPLUS_BUG_STABILITY */
-	if (AGING == get_eng_version()) {
-		BUG();
-	} else {
-		WARN_ON(1);
-	}
-//#endif /* OPLUS_BUG_STABILITY */
+	BUG();
 }
 #endif /* CONFIG_SLUB_DEBUG */
 
@@ -453,6 +440,8 @@ static inline void __qdf_bug(void)
 		} \
 	} while (0)
 
+#define __QDF_ASSERT_MSG "Assertion failed! %s:%s %s:%d\n"
+
 #define QDF_BUG_ON_ASSERT(_condition) \
 	do { \
 		if (!(_condition)) { \
@@ -478,6 +467,8 @@ static inline void __qdf_bug(void)
 			/* no-op */ \
 		} \
 	} while (0)
+
+#define __QDF_ASSERT_MSG "WARNING!! %s:%s %s:%d\n"
 
 #define QDF_BUG_ON_ASSERT(_condition) \
 	do { \
