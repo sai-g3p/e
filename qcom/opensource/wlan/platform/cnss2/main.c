@@ -25,6 +25,8 @@
 #if IS_ENABLED(CONFIG_QCOM_MINIDUMP)
 #include <soc/qcom/minidump.h>
 #endif
+#include <linux/regulator/consumer.h>
+#include <linux/nvmem-consumer.h>
 
 #include "cnss_plat_ipc_qmi.h"
 #include "cnss_utils.h"
@@ -33,7 +35,6 @@
 #include "debug.h"
 #include "genl.h"
 #include "reg.h"
-
 
 #ifdef OPLUS_FEATURE_WIFI_MAC
 #include <soc/oplus/system/boot_mode.h>
@@ -130,10 +131,7 @@ struct cnss_driver_event {
 	int ret;
 	void *data;
 };
-#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
-//Add for wifi switch monitor
-static unsigned int cnssprobestate = 0;
-#endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH */
+
 bool cnss_check_driver_loading_allowed(void)
 {
 	return cnss_allow_driver_loading;
@@ -1348,11 +1346,6 @@ shutdown:
 	clear_bit(CNSS_FW_READY, &plat_priv->driver_state);
 	clear_bit(CNSS_FW_MEM_READY, &plat_priv->driver_state);
 
-	#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
-	//Add for wifi switch monitor
-	clear_bit(CNSS_LOAD_REGDB_SUCCESS, &plat_env->loadRegdbState);
-	clear_bit(CNSS_LOAD_BDF_SUCCESS, &plat_env->loadBdfState);
-	#endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH */
 out:
 	return ret;
 }
@@ -1402,6 +1395,10 @@ static char *cnss_driver_event_to_str(enum cnss_driver_event_type type)
 		return "QDSS_TRACE_FREE";
 	case CNSS_DRIVER_EVENT_QDSS_TRACE_REQ_DATA:
 		return "QDSS_TRACE_REQ_DATA";
+	case CNSS_DRIVER_EVENT_RESUME_POST_SOL:
+		return "RESUME_POST_SOL";
+	case CNSS_DRIVER_EVENT_XO_TRIM_IND:
+		return "XO_TRIM_IND";
 	case CNSS_DRIVER_EVENT_MAX:
 		return "EVENT_MAX";
 	}
@@ -1711,6 +1708,100 @@ int cnss_idle_shutdown(struct device *dev)
 }
 EXPORT_SYMBOL(cnss_idle_shutdown);
 
+/**
+ * cnss_xo_trim_init - Initialize configurations for XO trim
+ * @plat_priv: Pointer to cnss platform data
+ *
+ * This function attempts to retrieve the register for inputting XO calibration
+ * data and the regulator to trigger the PBS from DTS.
+ *
+ * Return: None
+ */
+static void cnss_xo_trim_init(struct cnss_plat_data *plat_priv)
+{
+	struct device *dev;
+	struct cnss_xo_trim_config *xo_trim_conf;
+
+	dev = &plat_priv->plat_dev->dev;
+	xo_trim_conf = &plat_priv->xo_trim_conf;
+
+	xo_trim_conf->xo_calib_reg = devm_nvmem_cell_get(dev, "xo_calib_reg");
+	if (IS_ERR(xo_trim_conf->xo_calib_reg)) {
+		cnss_pr_dbg("Invalid xo_calib_reg: %ld\n",
+			    PTR_ERR(xo_trim_conf->xo_calib_reg));
+		return;
+	}
+
+	xo_trim_conf->wcal_pbs = devm_regulator_get_optional(dev, "wcal-pbs");
+	if (IS_ERR(xo_trim_conf->wcal_pbs)) {
+		cnss_pr_dbg("Invalid wcal_pbs: %ld\n",
+			    PTR_ERR(xo_trim_conf->wcal_pbs));
+		return;
+	}
+
+	cnss_pr_dbg("XO trim initialized\n");
+}
+
+/**
+ * cnss_xo_trim_deinit - Deinitialize configurations for XO trim
+ * @plat_priv: Pointer to cnss platform data
+ *
+ * Return: None
+ */
+static void cnss_xo_trim_deinit(struct cnss_plat_data *plat_priv)
+{
+	/* The resources allocated by devm_* functions will be automatically
+	 * freed by the resource manager when the device is released.
+	 */
+	cnss_pr_dbg("XO trim de-initialized\n");
+}
+
+/**
+ * cnss_xo_trim_perform - Perform the XO trim
+ * @xo_trim_conf: pointer to config for XO trim
+ *
+ * This function writes the new XO trim value to the NVMEM location exposed by
+ * PMIC. It then triggers PBS sequence using the WLAN_CAL regulator resource by
+ * calling regulator_enable(), followed by regulator_disable().
+ * This sequence causes PMIC PBS to apply the new trim value to PMIC XO trim
+ * settings, leading to an adjustment in the crystal oscillator frequency.
+ *
+ * Return: 0 on success, errno otherwise
+ */
+static int cnss_xo_trim_perform(struct cnss_xo_trim_config *xo_trim_conf)
+{
+	int ret;
+
+	if (IS_ERR_OR_NULL(xo_trim_conf->xo_calib_reg) ||
+	    IS_ERR_OR_NULL(xo_trim_conf->wcal_pbs)) {
+		cnss_pr_err("Invalid xo trim config\n");
+		return -EINVAL;
+	}
+
+	ret = nvmem_cell_write(xo_trim_conf->xo_calib_reg,
+			       &xo_trim_conf->trim_val,
+			       sizeof(xo_trim_conf->trim_val));
+	if (ret < 0) {
+		cnss_pr_err("Fail to write xo_calib_reg, ret = %d\n", ret);
+		return ret;
+	}
+
+	/* Enable/disable regulator to trigger PBS sequence */
+	ret = regulator_enable(xo_trim_conf->wcal_pbs);
+	if (ret) {
+		cnss_pr_err("Fail to enable wcal_pbs: %d\n", ret);
+		return ret;
+	}
+
+	ret = regulator_disable(xo_trim_conf->wcal_pbs);
+	if (ret) {
+		cnss_pr_err("Fail to disable wcal_pbs: %d\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
 static int cnss_get_resources(struct cnss_plat_data *plat_priv)
 {
 	int ret = 0;
@@ -1738,6 +1829,8 @@ static int cnss_get_resources(struct cnss_plat_data *plat_priv)
 		goto put_clk;
 	}
 
+	/* Non-fatal and continue if configuration is unavailable */
+	cnss_xo_trim_init(plat_priv);
 	return 0;
 
 put_clk:
@@ -1750,6 +1843,8 @@ out:
 
 static void cnss_put_resources(struct cnss_plat_data *plat_priv)
 {
+	cnss_xo_trim_deinit(plat_priv);
+
 	if (plat_priv->is_fw_managed_pwr) {
 		if (plat_priv->powered_on) {
 			cnss_fw_managed_power_gpio(plat_priv,
@@ -2929,6 +3024,46 @@ cnss_req_mem_results_handle(struct cnss_plat_data *plat_priv,
 	return !!ret;
 }
 #endif
+static int cnss_resume_post_sol_hdlr(struct cnss_plat_data *plat_priv,
+					  void *data)
+{
+	int ret = 0;
+
+	if (!plat_priv)
+		return -ENODEV;
+
+	cnss_bus_recover_link_post_sol(plat_priv);
+
+	kfree(data);
+	return ret;
+}
+
+/**
+ * cnss_xo_trim_ind_hdlr - Handler for XO trim indication.
+ * @plat_priv: Pointer to platform driver context.
+ * @data: Pointer to event data that holds the trim value.
+ *
+ * This function performs XO trim and notifies target of the result.
+ *
+ * Return: 0 on success, errno othrewise
+ */
+static int cnss_xo_trim_ind_hdlr(struct cnss_plat_data *plat_priv, void *data)
+{
+	int ret = -EINVAL;
+
+	if (!data)
+		goto out;
+
+	plat_priv->xo_trim_conf.trim_val = *((u8 *)data);
+	kfree(data);
+
+	ret = cnss_xo_trim_perform(&plat_priv->xo_trim_conf);
+	cnss_pr_dbg("XO trim result with value(%u): %d\n",
+		    plat_priv->xo_trim_conf.trim_val, ret);
+
+out:
+	return cnss_wlfw_xo_trim_result_send_sync(plat_priv, ret);
+}
 
 static void cnss_driver_event_work(struct work_struct *work)
 {
@@ -3001,9 +3136,6 @@ static void cnss_driver_event_work(struct work_struct *work)
 			ret = cnss_bus_force_fw_assert_hdlr(plat_priv);
 			break;
 		case CNSS_DRIVER_EVENT_IDLE_RESTART:
-			#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
-			idle_shutdown = false;
-			#endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH */
 			set_bit(CNSS_DRIVER_IDLE_RESTART,
 				&plat_priv->driver_state);
 			fallthrough;
@@ -3011,9 +3143,6 @@ static void cnss_driver_event_work(struct work_struct *work)
 			ret = cnss_power_up_hdlr(plat_priv);
 			break;
 		case CNSS_DRIVER_EVENT_IDLE_SHUTDOWN:
-			#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
-			idle_shutdown = true;
-			#endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH */
 			set_bit(CNSS_DRIVER_IDLE_SHUTDOWN,
 				&plat_priv->driver_state);
 			fallthrough;
@@ -3041,6 +3170,13 @@ static void cnss_driver_event_work(struct work_struct *work)
 		case CNSS_DRIVER_EVENT_QDSS_TRACE_REQ_DATA:
 			ret = cnss_qdss_trace_req_data_hdlr(plat_priv,
 							    event->data);
+			break;
+		case CNSS_DRIVER_EVENT_RESUME_POST_SOL:
+			ret = cnss_resume_post_sol_hdlr(plat_priv,
+							     event->data);
+			break;
+		case CNSS_DRIVER_EVENT_XO_TRIM_IND:
+			ret = cnss_xo_trim_ind_hdlr(plat_priv, event->data);
 			break;
 		default:
 			cnss_pr_err("Invalid driver event type: %d",
@@ -5251,94 +5387,7 @@ static const struct of_device_id cnss_of_match_table[] = {
 	{ },
 };
 MODULE_DEVICE_TABLE(of, cnss_of_match_table);
-#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
-//Add for wifi switch monitor
-static void icnss_create_fw_state_kobj(void);
-static void icnss_create_debug_kobj(void);
-extern ssize_t icnss_show_cnss_debug(struct device_driver *driver, char *buf);
-bool idle_shutdown = false;
 
-static ssize_t icnss_show_fw_ready(struct device_driver *driver, char *buf)
-{
-	bool firmware_ready = false;
-	bool bdfloadsuccess = false;
-	bool regdbloadsuccess = false;
-	bool cnssprobesuccess = false;
-	bool plat_env_null = false;
-	bool pcie_link_down = false;
-	bool pcie_bus_fail = false;
-	bool pcie_enumerate_fail = false;
-	bool pcie_l1_fail = false;
-
-	if (!plat_env) {
-		cnss_pr_err("icnss_show_fw_ready plat_env is NULL!\n");
-		plat_env_null = true;
-	} else {
-		firmware_ready = test_bit(CNSS_FW_READY, &plat_env->driver_state);
-		regdbloadsuccess = test_bit(CNSS_LOAD_REGDB_SUCCESS, &plat_env->loadRegdbState);
-		bdfloadsuccess = test_bit(CNSS_LOAD_BDF_SUCCESS, &plat_env->loadBdfState);
-		plat_env_null = false;
-		pcie_link_down = test_bit(CNSS_PCIE_LINK_DOWN,&plat_env->pcieLinkDown);
-		pcie_bus_fail = test_bit(CNSS_PCIEBUS_FAIL, &plat_env->pcieBusState);
-		pcie_enumerate_fail = test_bit(CNSS_PCIE_ENUM_FAIL, &plat_env->pcieEnumState);
-		pcie_l1_fail = test_bit(CNSS_PCIE_L1_FAIL,&plat_env->pcieL1Fail);
-	}
-	cnssprobesuccess = (cnssprobestate == CNSS_PROBE_SUCCESS);
-	return sprintf(buf, "%s:%s:%s:%s:%s:%s:%s:%s:%s",
-           (idle_shutdown ? "idle_shutdown" : (firmware_ready ? "fwstatus_ready" : "fwstatus_not_ready")),
-           (regdbloadsuccess ? "regdb_loadsuccess" : "regdb_loadfail"),
-           (bdfloadsuccess ? "bdf_loadsuccess" : "bdf_loadfail"),
-           (cnssprobesuccess ? "cnssprobe_success" : "cnssprobe_fail"),
-           (plat_env_null ? "platenv_fail" : "platenv_success"),
-           (pcie_link_down ? "pcie_link_down" : "pcie_link_up"),
-           (pcie_bus_fail ? "pcie_bus_fail" : "pcie_bus_success"),
-           (pcie_enumerate_fail ? "pcie_enumerate_fail" : "pcie_enumerate_success"),
-           (pcie_l1_fail ? "pcie_l1_fail" : "pcie_l1_success")
-           );
-}
-
-struct driver_attribute fw_ready_attr = {
-	.attr = {
-		.name = "firmware_ready",
-		.mode = S_IRUGO,
-	},
-	.show = icnss_show_fw_ready,
-	//read only so we don't need to impl store func
-};
-
-struct driver_attribute cnss_debug_attr = {
-	.attr = {
-		.name = "cnss_debug",
-		.mode = S_IRUGO,
-	},
-	.show = icnss_show_cnss_debug,
-};
-
-#endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH */
-#ifdef OPLUS_FEATURE_WIFI_FTM
-//Add for QCOM WCN chip id
-static void icnss_create_device_id_kobj(void);
-
-static ssize_t icnss_show_device_id(struct device_driver *driver, char *buf)
-{
-    unsigned long device_id = 0;
-    if (!plat_env) {
-        cnss_pr_err("icnss_show_device_id plat_env is NULL!\n");
-    } else {
-        device_id = plat_env->device_id;
-    }
-    return sprintf(buf, "0x%lx", device_id);
-}
-
-struct driver_attribute device_id_attr = {
-	.attr = {
-		.name = "device_id",
-		.mode = S_IRUGO,
-	},
-	.show = icnss_show_device_id,
-	//read only so we don't need to impl store func
-};
-#endif /* OPLUS_FEATURE_WIFI_FTM */
 static inline bool
 cnss_use_nv_mac(struct cnss_plat_data *plat_priv)
 {
@@ -5459,17 +5508,9 @@ retry:
 		}
 		goto power_off;
 	}
-#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
-//Add for wifi switch monitor
-	clear_bit(CNSS_PCIEBUS_FAIL, &plat_env->pcieBusState);
-#endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH */
 	return 0;
 
 power_off:
-#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
-//Add for wifi switch monitor
-	set_bit(CNSS_PCIEBUS_FAIL, &plat_env->pcieBusState);
-#endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH */
 	cnss_power_off_device(plat_priv);
 end:
 	return ret;
@@ -5634,12 +5675,7 @@ int cnss_thermal_cdev_register(struct device *dev, unsigned long max_state,
 
 	dev_node = of_find_node_by_name(NULL, cdev_node_name);
 	if (!dev_node) {
-		#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
-		//Add for wifi switch monitor
-		cnss_pr_info("Failed to get cooling device node\n");
-		#else
 		cnss_pr_err("Failed to get cooling device node\n");
-		#endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH*/
 		kfree(cnss_tcdev);
 		return -EINVAL;
 	}
@@ -5807,15 +5843,7 @@ static int cnss_probe(struct platform_device *plat_dev)
 	cnss_get_cpr_info(plat_priv);
 	cnss_aop_interface_init(plat_priv);
 	cnss_init_control_params(plat_priv);
-	#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
-    	//Add for wifi switch monitor
-	icnss_create_fw_state_kobj();
-	icnss_create_debug_kobj();
-	#endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH */
-	#ifdef OPLUS_FEATURE_WIFI_FTM
-    //Add for QCOM WCN chip id
-    icnss_create_device_id_kobj();
-    #endif /* OPLUS_FEATURE_WIFI_FTM */
+
 	ret = cnss_get_resources(plat_priv);
 	if (ret)
 		goto reset_ctx;
@@ -5867,10 +5895,7 @@ static int cnss_probe(struct platform_device *plat_dev)
 
 	mutex_init(&plat_priv->tcdev_lock);
 	INIT_LIST_HEAD(&plat_priv->cnss_tcdev_list);
-	#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
-	//Add for wifi switch monitor
-	cnssprobestate = CNSS_PROBE_SUCCESS;
-	#endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH */
+
 	cnss_pr_info("Platform driver probed successfully.\n");
 
 	return 0;
@@ -5899,10 +5924,6 @@ reset_ctx:
 reset_plat_dev:
 	cnss_clear_plat_priv(plat_priv);
 out:
-	#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
-	//Add for wifi switch monitor
-	cnssprobestate = CNSS_PROBE_FAIL;
-	#endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH */
 	return ret;
 }
 
@@ -5987,30 +6008,7 @@ static bool cnss_is_valid_dt_node_found(void)
 
 	return false;
 }
-#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
-//Add for wifi switch monitor
-static void icnss_create_fw_state_kobj(void) {
-	if (driver_create_file(&(cnss_platform_driver.driver), &fw_ready_attr)) {
-		cnss_pr_info("failed to create %s", fw_ready_attr.attr.name);
-	}
-}
 
-static void icnss_create_debug_kobj(void)
-{
-    if (driver_create_file(&(cnss_platform_driver.driver), &cnss_debug_attr)) {
-        cnss_pr_info("failed to create %s", cnss_debug_attr.attr.name);
-    }
-}
-#endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH */
-#ifdef OPLUS_FEATURE_WIFI_FTM
-//Add for QCOM WCN chip id
-static void icnss_create_device_id_kobj(void)
-{
-    if (driver_create_file(&(cnss_platform_driver.driver), &device_id_attr)) {
-        cnss_pr_info("failed to create %s", device_id_attr.attr.name);
-    }
-}
-#endif /* OPLUS_FEATURE_WIFI_FTM */
 static int __init cnss_initialize(void)
 {
 	int ret = 0;

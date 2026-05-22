@@ -8,6 +8,7 @@
 #include <linux/soc/qcom/qmi.h>
 
 #include "bus.h"
+#include "cnss_utils.h"
 #include "debug.h"
 #include "main.h"
 #include "qmi.h"
@@ -217,6 +218,13 @@ static int cnss_wlfw_ind_register_send_sync(struct cnss_plat_data *plat_priv)
 	req->wfc_call_twt_config_enable = 1;
 	req->async_data_enable_valid = 1;
 	req->async_data_enable = 1;
+
+	/* Enable only when XO trim related resources are valid */
+	if (!IS_ERR_OR_NULL(plat_priv->xo_trim_conf.xo_calib_reg) &&
+	    !IS_ERR_OR_NULL(plat_priv->xo_trim_conf.wcal_pbs)) {
+		req->xo_trim_enable_valid = 1;
+		req->xo_trim_enable = 1;
+	}
 
 	ret = qmi_txn_init(&plat_priv->qmi_wlfw, &txn,
 			   wlfw_ind_register_resp_msg_v01_ei, resp);
@@ -907,19 +915,9 @@ int cnss_wlfw_bdf_dnld_send_sync(struct cnss_plat_data *plat_priv,
 
 	temp = fw_entry->data;
 	remaining = fw_entry->size;
-	#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
-	//Add for wifi switch monitor
-	if (bdf_type == CNSS_BDF_REGDB) {
-		set_bit(CNSS_LOAD_REGDB_SUCCESS, &plat_priv->loadRegdbState);
-	} else if (bdf_type == CNSS_BDF_ELF){
-		set_bit(CNSS_LOAD_BDF_SUCCESS, &plat_priv->loadBdfState);
-	}
-	cnss_pr_info("Downloading %s: %s, size: %u\n",
-		    cnss_bdf_type_to_str(bdf_type), filename, remaining);
-	#else
+
 	cnss_pr_dbg("Downloading %s: %s, size: %u\n",
 		    cnss_bdf_type_to_str(bdf_type), filename, remaining);
-	#endif /* OPLUS_FEATURE_WIFI_DCS_SWITCH */
 
 	while (remaining) {
 		req->valid = 1;
@@ -1359,6 +1357,7 @@ int cnss_wlfw_wlan_mac_req_send_sync(struct cnss_plat_data *plat_priv,
 	int i;
 	char revert_mac[QMI_WLFW_MAC_ADDR_SIZE_V01];
 #endif /* OPLUS_FEATURE_WIFI_MAC */
+
 	if (!plat_priv || !mac || mac_len != QMI_WLFW_MAC_ADDR_SIZE_V01)
 		return -EINVAL;
 
@@ -1370,6 +1369,7 @@ int cnss_wlfw_wlan_mac_req_send_sync(struct cnss_plat_data *plat_priv,
 		ret = -EIO;
 		goto out;
 	}
+
 #ifdef OPLUS_FEATURE_WIFI_MAC
 	for (i = 0; i < QMI_WLFW_MAC_ADDR_SIZE_V01 ; i ++){
 		revert_mac[i] = mac[QMI_WLFW_MAC_ADDR_SIZE_V01 - i -1];
@@ -1382,7 +1382,6 @@ int cnss_wlfw_wlan_mac_req_send_sync(struct cnss_plat_data *plat_priv,
 			    mac, plat_priv->driver_state);
 	memcpy(req.mac_addr, mac, mac_len);
 #endif /* OPLUS_FEATURE_WIFI_MAC */
-
 	req.mac_addr_valid = 1;
 
 	ret = qmi_send_request(&plat_priv->qmi_wlfw, NULL, &txn,
@@ -1772,6 +1771,82 @@ int wlfw_qdss_trace_stop(struct cnss_plat_data *plat_priv, unsigned long long op
 {
 	return wlfw_send_qdss_trace_mode_req(plat_priv, QMI_WLFW_QDSS_TRACE_OFF_V01,
 					     option);
+}
+
+
+/**
+ * cnss_wlfw_misc_req_send_sync() - Send QMI_WLFW_MISC_REQ with provided type
+ * @plat_priv: CNSS platform data
+ * @type: subtype for QMI_WLFW_MISC_REQ
+ *
+ * Return: 0 for success, negative values otherwise
+ */
+static int cnss_wlfw_misc_req_send_sync(struct cnss_plat_data *plat_priv,
+					enum wlfw_misc_req_enum_v01 type)
+{
+	int ret = 0;
+	struct wlfw_misc_req_msg_v01 *req;
+	struct wlfw_misc_resp_msg_v01 *resp;
+	struct qmi_txn txn;
+
+	if (type <= WLFW_MISC_REQ_ENUM_MIN_VAL_V01 ||
+	    type >= WLFW_MISC_REQ_ENUM_MAX_VAL_V01) {
+		cnss_pr_err("Invalid type[%d] for MISC_REQ\n", type);
+		return -EINVAL;
+	}
+
+	req = kzalloc(sizeof(*req), GFP_KERNEL);
+	if (!req) {
+		cnss_pr_err("Failed to allocate req for MISC_REQ[%d]\n", type);
+		return -ENOMEM;
+	}
+
+	resp = kzalloc(sizeof(*resp), GFP_KERNEL);
+	if (!resp) {
+		cnss_pr_err("Failed to allocate resp for MISC_REQ[%d]\n", type);
+		kfree(req);
+		return -ENOMEM;
+	}
+
+	ret = qmi_txn_init(&plat_priv->qmi_wlfw, &txn,
+			   wlfw_misc_resp_msg_v01_ei, resp);
+
+	if (ret < 0) {
+		cnss_pr_err("Fail to init txn for MISC_REQ[%d]: %d\n",
+			    type, ret);
+		goto end;
+	}
+
+	req->type = type;
+	ret = qmi_send_request(&plat_priv->qmi_wlfw, NULL, &txn,
+			       QMI_WLFW_MISC_REQ_V01,
+			       WLFW_MISC_REQ_MSG_V01_MAX_MSG_LEN,
+			       wlfw_misc_req_msg_v01_ei, req);
+	if (ret < 0) {
+		qmi_txn_cancel(&txn);
+		cnss_pr_err("Fail to send MISC_REQ[%d]: %d\n", type, ret);
+		goto end;
+	}
+
+	ret = qmi_txn_wait(&txn, plat_priv->ctrl_params.qmi_timeout);
+	if (ret < 0) {
+		cnss_pr_err("Failed to wait for resp of MISC_REQ[%d]: %d\n",
+			    type, ret);
+		goto end;
+	} else if (resp->resp.result != QMI_RESULT_SUCCESS_V01) {
+		cnss_pr_err("MISC_REQ[%d] failed, result:%d error:%d\n",
+			    type, resp->resp.result, resp->resp.error);
+		ret = -resp->resp.result;
+		goto end;
+	} else {
+		cnss_pr_dbg("Sent MISC_REQ[%d] successfully\n", type);
+		ret = 0;
+	}
+
+end:
+	kfree(req);
+	kfree(resp);
+	return ret;
 }
 
 int cnss_wlfw_wlan_mode_send_sync(struct cnss_plat_data *plat_priv,
@@ -3283,6 +3358,34 @@ static void cnss_wlfw_driver_async_data_ind_cb(struct qmi_handle *qmi_wlfw,
 			(void *)ind_msg->data, ind_msg->data_len);
 }
 
+static void cnss_wlfw_xo_trim_ind_cb(struct qmi_handle *qmi_wlfw,
+				     struct sockaddr_qrtr *sq,
+				     struct qmi_txn *txn,
+				     const void *data)
+{
+	struct cnss_plat_data *plat_priv =
+		container_of(qmi_wlfw, struct cnss_plat_data, qmi_wlfw);
+	const struct wlfw_xo_trim_ind_msg_v01 *ind_msg = data;
+	u8 *trim_value;
+
+	if (!txn) {
+		cnss_pr_err("Spurious XO_TRIM indication\n");
+		return;
+	}
+
+	cnss_pr_dbg("Received XO_TRIM with trim val: %d\n", ind_msg->trim_val);
+	trim_value = kzalloc(sizeof(*trim_value), GFP_KERNEL);
+	if (!trim_value) {
+		cnss_pr_err("Failed to allocate memory\n");
+		goto out;
+	}
+
+	*trim_value = ind_msg->trim_val;
+
+out:
+	cnss_driver_event_post(plat_priv, CNSS_DRIVER_EVENT_XO_TRIM_IND,
+			       0, trim_value);
+}
 
 static int cnss_ims_wfc_call_twt_cfg_send_sync
 	(struct cnss_plat_data *plat_priv,
@@ -3503,6 +3606,14 @@ static struct qmi_msg_handler qmi_wlfw_msg_handlers[] = {
 		sizeof(struct wlfw_driver_async_data_ind_msg_v01),
 		.fn = cnss_wlfw_driver_async_data_ind_cb
 	},
+	{
+		.type = QMI_INDICATION,
+		.msg_id = QMI_WLFW_XO_TRIM_IND_V01,
+		.ei = wlfw_xo_trim_ind_msg_v01_ei,
+		.decoded_size =
+		sizeof(struct wlfw_xo_trim_ind_msg_v01),
+		.fn = cnss_wlfw_xo_trim_ind_cb
+	},
 	{}
 };
 
@@ -3707,6 +3818,10 @@ int cnss_qmi_get_dms_mac(struct cnss_plat_data *plat_priv)
 	struct dms_get_mac_address_resp_msg_v01 resp;
 	struct qmi_txn txn;
 	int ret = 0;
+#ifdef OPLUS_FEATURE_WIFI_MAC
+	int i;
+	char revert_mac[QMI_WLFW_MAC_ADDR_SIZE_V01];
+#endif /* OPLUS_FEATURE_WIFI_MAC */
 
 	if  (!test_bit(CNSS_QMI_DMS_CONNECTED, &plat_priv->driver_state)) {
 		cnss_pr_err("DMS QMI connection not established\n");
@@ -3753,8 +3868,20 @@ int cnss_qmi_get_dms_mac(struct cnss_plat_data *plat_priv)
 		goto out;
 	}
 	plat_priv->dms.mac_valid = true;
+#ifdef OPLUS_FEATURE_WIFI_MAC
+	for (i = 0; i < QMI_WLFW_MAC_ADDR_SIZE_V01; i++) {
+		revert_mac[i] = resp.mac_address[QMI_WLFW_MAC_ADDR_SIZE_V01 - i -1];
+	}
+	memcpy(plat_priv->dms.mac, revert_mac, QMI_WLFW_MAC_ADDR_SIZE_V01);
+#else
 	memcpy(plat_priv->dms.mac, resp.mac_address, QMI_WLFW_MAC_ADDR_SIZE_V01);
+#endif
 	cnss_pr_info("Received DMS MAC: [%pM]\n", plat_priv->dms.mac);
+	ret = cnss_utils_set_wlan_mac_address(plat_priv->dms.mac, QMI_WLFW_MAC_ADDR_SIZE_V01);
+	if (ret < 0) {
+		cnss_pr_err("Failed to set cnss utils wlan mac address (non-fatal), err: %d\n", ret);
+	}
+
 out:
 	return ret;
 }
@@ -4008,6 +4135,23 @@ out:
 	kfree(resp);
 	kfree(req);
 	return ret;
+}
+
+/**
+ * cnss_wlfw_xo_trim_result_send_sync - Notify the XO trim result to target.
+ * @plat_priv: Pointer to platform driver context.
+ * @result: XO trim result.
+ *
+ * Return: 0 on success, errno othrewise
+ */
+int cnss_wlfw_xo_trim_result_send_sync(struct cnss_plat_data *plat_priv,
+				       int result)
+{
+	enum wlfw_misc_req_enum_v01 type = (result ?
+					    WLFW_REQ_XO_TRIM_FAIL_V01 :
+					    WLFW_REQ_XO_TRIM_SUCCESS_V01);
+
+	return cnss_wlfw_misc_req_send_sync(plat_priv, type);
 }
 
 int cnss_send_subsys_restart_level_msg(struct cnss_plat_data *plat_priv)
