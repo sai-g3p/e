@@ -471,10 +471,6 @@ void oplus_panel_switch_vid_mode(struct dsi_display *display, struct dsi_display
 		return;
 	}
 
-	if (!panel->oplus_priv.vid_timming_switch_enabled) {
-		LCD_ERR("oplus_panel_switch_vid_mode not support\n");
-		return;
-	}
 
 	refresh_rate = mode->timing.refresh_rate;
 		LCD_INFO("oplus_panel_switch_vid_mode refresh %d\n", refresh_rate);
