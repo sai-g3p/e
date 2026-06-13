@@ -1336,7 +1336,7 @@ int sensor_start_thread(void *arg)
 
 	if (s_ctrl->sensor_init_setting.reg_setting != NULL)
 	{
-		kfree(s_ctrl->sensor_init_setting.reg_setting);
+		kvfree(s_ctrl->sensor_init_setting.reg_setting);
 		s_ctrl->sensor_init_setting.reg_setting = NULL;
 	}
 	mutex_unlock(&(s_ctrl->cam_sensor_mutex));
@@ -1439,38 +1439,52 @@ int cam_sensor_start(struct cam_sensor_ctrl_t *s_ctrl, void *arg)
 	int i = 0;
 	struct cam_control *cmd = (struct cam_control *)arg;
 	struct cam_sensor_i2c_reg_array *reg_setting = NULL;
-	struct cam_oem_initsettings *initsettings = vzalloc(sizeof(struct cam_oem_initsettings));
+	struct cam_oem_initsettings *initsettings = NULL;
 	bool m_support_burst = FALSE;
-	if (initsettings == NULL) {
-		CAM_ERR(CAM_EEPROM, "failed to allocate memory!!!!");
-		return rc;
-	}
 	if (!s_ctrl || !cmd)
 	{
 		CAM_ERR(CAM_SENSOR, "cam_sensor_start s_ctrl or arg is null ");
-		return -1;
+		return -EINVAL;
+	}
+
+	initsettings = vzalloc(sizeof(struct cam_oem_initsettings));
+	if (initsettings == NULL) {
+		CAM_ERR(CAM_EEPROM, "failed to allocate memory!!!!");
+		return -ENOMEM;
 	}
 	memset(initsettings, 0, sizeof(struct cam_oem_initsettings));
+
+	if (cmd->size > sizeof(struct cam_oem_initsettings))
+	{
+		CAM_ERR(CAM_SENSOR, "invalid initsettings size: %u", cmd->size);
+		rc = -EINVAL;
+		goto free_initsettings;
+	}
 
 	if (copy_from_user(initsettings, u64_to_user_ptr(cmd->handle), cmd->size))
 	{
 		CAM_ERR(CAM_SENSOR, "initsettings copy_to_user failed ");
+		rc = -EFAULT;
+		goto free_initsettings;
 	}
 
-	if ((CAM_OEM_INITSETTINGS_SIZE_MAX > initsettings->size) && (initsettings->size > 0))
+	if ((initsettings->size <= 0) ||
+		(initsettings->size > CAM_OEM_INITSETTINGS_SIZE_MAX))
 	{
-		reg_setting = (struct cam_sensor_i2c_reg_array *)kmalloc((sizeof(struct cam_sensor_i2c_reg_array) * initsettings->size), GFP_KERNEL);
+		CAM_ERR(CAM_SENSOR, "invalid initsettings entries: %d",
+			initsettings->size);
+		rc = -EINVAL;
+		goto free_initsettings;
 	}
+
+	reg_setting = kvmalloc_array(initsettings->size,
+		sizeof(struct cam_sensor_i2c_reg_array), GFP_KERNEL);
 
 	if (reg_setting == NULL)
 	{
 		CAM_ERR(CAM_EEPROM, "failed to allocate initsettings memory!!!!");
-		if (initsettings != NULL)
-		{
-			vfree(initsettings);
-			initsettings = NULL;
-		}
-		return rc;
+		rc = -ENOMEM;
+		goto free_initsettings;
 	}
 
 	for (i = 0; i < initsettings->size; i++)
@@ -1508,7 +1522,7 @@ int cam_sensor_start(struct cam_sensor_ctrl_t *s_ctrl, void *arg)
 			CAM_ERR(CAM_SENSOR, "create sensor start thread failed");
 			if (reg_setting != NULL)
 			{
-				kfree(reg_setting);
+				kvfree(reg_setting);
 				reg_setting = NULL;
 			}
 			rc = -1;
@@ -1525,6 +1539,10 @@ int cam_sensor_start(struct cam_sensor_ctrl_t *s_ctrl, void *arg)
 
 	mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
 
+	return rc;
+
+free_initsettings:
+	vfree(initsettings);
 	return rc;
 }
 
