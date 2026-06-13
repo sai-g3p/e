@@ -1313,7 +1313,7 @@ static int __wlan_hdd_bus_suspend(struct wow_enable_params wow_params,
 	int pending;
 	struct bbm_params param = {0};
 
-	hdd_info("starting bus suspend");
+	hdd_debug("starting bus suspend");
 
 	hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
 	if (!hdd_ctx)
@@ -1409,7 +1409,7 @@ static int __wlan_hdd_bus_suspend(struct wow_enable_params wow_params,
 	param.policy_info.flag = BBM_APPS_SUSPEND;
 	ucfg_dp_bbm_apply_independent_policy(hdd_ctx->psoc, &param);
 
-	hdd_info("bus suspend succeeded");
+	hdd_debug("bus suspend succeeded");
 	return 0;
 
 resume_txrx:
@@ -1563,7 +1563,7 @@ int wlan_hdd_bus_resume(enum qdf_suspend_type type)
 	if (cds_is_driver_recovering())
 		return 0;
 
-	hdd_info("starting bus resume");
+	hdd_debug("starting bus resume");
 
 	if (!hdd_ctx)
 		return -ENODEV;
@@ -1629,7 +1629,7 @@ int wlan_hdd_bus_resume(enum qdf_suspend_type type)
 		goto out;
 	}
 
-	hdd_info("bus resume succeeded");
+	hdd_debug("bus resume succeeded");
 	return 0;
 
 out:
