@@ -7555,8 +7555,10 @@ static void lim_tx_mgmt_frame(struct mac_context *mac_ctx, uint8_t vdev_id,
 		session_id = vdev_id;
 	}
 
+#ifdef WLAN_DEBUG
 	qdf_mtrace(QDF_MODULE_ID_PE, QDF_MODULE_ID_WMA, TRACE_CODE_TX_MGMT,
 		   session_id, 0);
+#endif
 
 	if (opmode != QDF_NAN_DISC_MODE) {
 		if (fc->subType == SIR_MAC_MGMT_AUTH) {
@@ -7589,7 +7591,9 @@ static void lim_tx_mgmt_frame(struct mac_context *mac_ctx, uint8_t vdev_id,
 	MTRACE(qdf_trace(QDF_MODULE_ID_PE, TRACE_CODE_TX_COMPLETE,
 		session_id, qdf_status));
 	if (!QDF_IS_STATUS_SUCCESS(qdf_status)) {
+#ifdef WLAN_DEBUG
 		pe_err("Could not send Auth frame, retCode=%X", qdf_status);
+#endif
 		mac_ctx->auth_ack_status = LIM_TX_FAILED;
 		auth_ack_status = SENT_FAIL;
 		lim_diag_event_report(mac_ctx, WLAN_PE_DIAG_AUTH_ACK_EVENT,
@@ -7769,12 +7773,16 @@ void lim_send_frame(struct mac_context *mac_ctx, uint8_t vdev_id, uint8_t *buf,
 	QDF_STATUS qdf_status;
 	uint8_t *frame;
 	void *packet;
+#ifdef WLAN_DEBUG
 	tpSirMacFrameCtl fc = (tpSirMacFrameCtl)buf;
+#endif
 	tpSirMacMgmtHdr mac_hdr = (tpSirMacMgmtHdr)buf;
 	struct wlan_objmgr_vdev *vdev;
 	QDF_STATUS status;
 
+#ifdef WLAN_DEBUG
 	pe_debug("sending fc->type: %d fc->subType: %d", fc->type, fc->subType);
+#endif
 
 	vdev = wlan_objmgr_get_vdev_by_id_from_psoc(mac_ctx->psoc, vdev_id,
 						    WLAN_LEGACY_MAC_ID);

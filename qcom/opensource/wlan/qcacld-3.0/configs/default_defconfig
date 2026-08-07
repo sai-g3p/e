@@ -851,7 +851,7 @@ endif
 
 # Compile all log levels by default
 CONFIG_WLAN_LOG_FATAL := y
-CONFIG_WLAN_LOG_ERROR := y
+CONFIG_WLAN_LOG_ERROR := n
 CONFIG_WLAN_LOG_WARN := n
 CONFIG_WLAN_LOG_INFO := n
 CONFIG_WLAN_LOG_DEBUG := n

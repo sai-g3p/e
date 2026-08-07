@@ -12956,6 +12956,7 @@ hdd_display_netif_queue_history_compact(struct hdd_context *hdd_ctx)
 static void
 wlan_hdd_display_adapter_netif_queue_stats(struct hdd_adapter *adapter)
 {
+#ifdef WLAN_DEBUG
 	int i;
 	qdf_time_t total, pause, unpause, curr_time, delta;
 	struct hdd_netif_queue_history *q_hist_ptr;
@@ -14825,6 +14826,7 @@ void wlan_hdd_deinit_multi_client_info_table(struct hdd_adapter *adapter)
 			adapter->client_info[i].in_use = false;
 		}
 	}
+#endif
 }
 
 /**
