@@ -1061,8 +1061,6 @@ static int oplus_tp_notifier_call(struct notifier_block *nb, unsigned long val, 
                 fp_queue_event(E_FP_TP, tp_info->touch_state, tp_info, sizeof(struct fp_underscreen_info));
             } else {
                 fp_disable_intr3(fp_dev);
-		qcom_dcvs_bus_boost_kick_max(500);
-		devfreq_gpu_kick(500);
                 fp_cpu_latency_boost();
                 fp_queue_event(E_FP_TP, tp_info->touch_state, tp_info, sizeof(struct fp_underscreen_info));
                 lasttouchmode = tp_info->touch_state;
@@ -1128,16 +1126,12 @@ int opticalfp_irq_handler_uff(struct fp_underscreen_info *tp_info) {
     pr_debug("[%s] tp_info->touch_state =%d, tp_info->x =%d, tp_info->y =%d\n", __func__, tp_info->touch_state, tp_info->x, tp_info->y);
     wake_lock_timeout(&fp_wakelock, msecs_to_jiffies(WAKELOCK_HOLD_IRQ_TIME));
     if (1 == tp_info->touch_state) {
-	qcom_dcvs_bus_boost_kick_max(500);
-	devfreq_gpu_kick(500);
         fp_cpu_latency_boost();
         fp_enable_intr3(fp_dev);
         lasttouchmode = tp_info->touch_state;
         fp_queue_event(E_FP_TP, tp_info->touch_state, tp_info, sizeof(struct fp_underscreen_info));
     } else {
         fp_disable_intr3(fp_dev);
-	qcom_dcvs_bus_boost_kick_max(500);
-	devfreq_gpu_kick(500);
         fp_cpu_latency_boost();
         fp_queue_event(E_FP_TP, tp_info->touch_state, tp_info, sizeof(struct fp_underscreen_info));
         lasttouchmode = tp_info->touch_state;
